@@ -1,0 +1,15 @@
+[server]
+maxUploadSize = 1
+maxMessageSize = 50
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#bd9650"
+backgroundColor = "#070a0f"
+secondaryBackgroundColor = "#121820"
+textColor = "#f1eee7"
+

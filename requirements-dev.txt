@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest==9.0.3
+pytest-cov==7.0.0
+ruff==0.16.6
+bandit==1.9.4
+pip-audit==2.10.1
+pypdf==6.10.0

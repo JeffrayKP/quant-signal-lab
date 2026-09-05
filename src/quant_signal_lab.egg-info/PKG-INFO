@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: quant-signal-lab
+Version: 4.3.1
+Summary: Leakage-aware equity research and portfolio risk dashboard
+Requires-Python: <3.14,>=3.11
+Requires-Dist: streamlit<2,>=1.48
+Requires-Dist: pandas<3,>=2.2
+Requires-Dist: numpy<3,>=2.0
+Requires-Dist: plotly<7,>=6.0
+Requires-Dist: yfinance<1,>=0.2.65
+Requires-Dist: scikit-learn<2,>=1.6
+Requires-Dist: scipy<2,>=1.14
+Requires-Dist: requests<3,>=2.32
+Requires-Dist: defusedxml<1,>=0.7
+Requires-Dist: reportlab<5,>=4.4
+Provides-Extra: dev
+Requires-Dist: pytest<10,>=9.0.3; extra == "dev"
+Requires-Dist: pytest-cov<8,>=7; extra == "dev"
+Requires-Dist: ruff<1,>=0.16; extra == "dev"
+Requires-Dist: bandit<2,>=1.9; extra == "dev"
+Requires-Dist: pip-audit<3,>=2.10; extra == "dev"
+Requires-Dist: pypdf<7,>=6.10; extra == "dev"
