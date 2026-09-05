@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import html
 import io
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 import numpy as np
 import pandas as pd
