@@ -304,11 +304,26 @@ def main() -> None:
     signals = rank_signals(predictions, panel, mandate, diagnostics.return_error)
     opportunities = signals[signals["Eligible Long"]].copy()
     returns, closes = return_matrix(data), close_matrix(data)
-    portfolio = optimize_portfolio(signals, returns, mandate)
     fallback_stocks = signals[(~signals["Defensive"]) & signals["Ticker"].ne(mandate.benchmark)]
     if fallback_stocks.empty:
         st.error("No non-benchmark stock has enough validated data for the research view. Refresh the data or try again later.")
         st.stop()
+    research_candidates = opportunities.copy()
+    if research_candidates.empty:
+        research_candidates = fallback_stocks[fallback_stocks["Feature Coverage"] >= 0.65].copy()
+        if research_candidates.empty:
+            research_candidates = fallback_stocks.copy()
+
+    portfolio = optimize_portfolio(signals, returns, mandate)
+    portfolio_uses_research_candidates = False
+    if portfolio.holdings.empty:
+        augmented_signals = signals.copy()
+        augmented_tickers = research_candidates["Ticker"].head(max(mandate.max_holdings * 3, 12))
+        augmented_signals.loc[augmented_signals["Ticker"].isin(augmented_tickers), "Eligible Long"] = True
+        candidate_portfolio = optimize_portfolio(augmented_signals, returns, mandate)
+        if not candidate_portfolio.holdings.empty:
+            portfolio = candidate_portfolio
+            portfolio_uses_research_candidates = True
     leader = opportunities.iloc[0] if not opportunities.empty else fallback_stocks.iloc[0]
     selected = str(leader["Ticker"])
     gate = evidence_gate(diagnostics)
@@ -381,7 +396,7 @@ def main() -> None:
             {"label": regime.label, "detail": regime.detail},
             portfolio.holdings,
             comparison,
-            opportunities.head(8),
+            research_candidates.head(8),
             mandate.horizon,
             mandate.target_return,
         )
@@ -397,6 +412,10 @@ def main() -> None:
         st.markdown('<p class="section-kicker">Individual research signals</p>', unsafe_allow_html=True)
         st.subheader("Best Stocks")
         st.caption("Rankings are research estimates. The evidence gate above determines how much weight the model deserves today.")
+        if opportunities.empty:
+            st.warning(
+                "No stock currently passes the strict long screen. The highest-ranked research candidates remain visible below for comparison and further analysis."
+            )
         columns = [
             "Ticker",
             "Sector",
@@ -414,7 +433,7 @@ def main() -> None:
         percent_columns = {
             key: "{:.1%}" for key in columns if "Probability" in key or key in {"Expected Return", "Risk Score", "Reliability", "Feature Coverage"}
         }
-        st.dataframe(opportunities[columns].head(20).style.format(percent_columns).format({"Signal Score": "{:.3f}"}), width="stretch", hide_index=True)
+        st.dataframe(research_candidates[columns].head(20).style.format(percent_columns).format({"Signal Score": "{:.3f}"}), width="stretch", hide_index=True)
         limited_history = signals[signals["Feature Coverage"] < 0.65][
             ["Ticker", "Sector", "close", "Expected Return", "Probability Positive", "Risk Score", "Feature Coverage"]
         ]
@@ -447,6 +466,10 @@ def main() -> None:
         st.markdown('<p class="section-kicker">Diversified allocation</p>', unsafe_allow_html=True)
         st.subheader("Best Portfolio")
         st.caption("The portfolio can include a lower-ranked candidate or defensive asset when it improves diversification or controls downside risk.")
+        if portfolio_uses_research_candidates:
+            st.warning(
+                "No stock passed the strict long screen, so this exploratory research portfolio uses the highest-ranked candidates. All selected position, sector, and beta limits still apply."
+            )
         if portfolio.holdings.empty:
             st.warning("No feasible portfolio was produced under the current constraints.")
         else:

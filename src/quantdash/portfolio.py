@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from scipy.optimize import linprog, minimize
 from scipy.stats import norm
 from sklearn.covariance import LedoitWolf
 
@@ -34,7 +34,10 @@ def rank_signals(
     mandate: Mandate,
     return_error: float | None = None,
 ) -> pd.DataFrame:
-    latest = latest_features.sort_values(["ticker", "date"]).groupby("ticker", as_index=False).tail(1)
+    latest_source = latest_features.sort_values(["ticker", "date"]).copy()
+    risk_columns = [column for column in ["vol20", "cvar95", "beta60"] if column in latest_source]
+    latest_source[risk_columns] = latest_source.groupby("ticker")[risk_columns].ffill()
+    latest = latest_source.groupby("ticker", as_index=False).tail(1)
     frame = predictions.merge(latest, left_on="Ticker", right_on="ticker", how="left")
     volatility = _conservative_risk_input(frame["vol20"].abs(), 0.30)
     tail_loss = _conservative_risk_input(frame["cvar95"].abs(), 0.04)
@@ -70,13 +73,31 @@ def rank_signals(
 def optimize_portfolio(signals: pd.DataFrame, returns: pd.DataFrame, mandate: Mandate) -> PortfolioResult:
     eligible = signals[(signals["Eligible Long"]) | (signals["Defensive"])].copy()
     eligible = eligible[eligible["Ticker"].isin(returns.columns) & eligible["Ticker"].ne(mandate.benchmark)]
-    eligible = eligible.sort_values("Signal Score", ascending=False).head(max(mandate.max_holdings * 3, 12))
+    eligible = eligible.sort_values("Signal Score", ascending=False)
+    pool_size = max(mandate.max_holdings * 3, 12)
+    defensive_pool = eligible[eligible["Defensive"]].head(min(2, pool_size))
+    return_pool = eligible[~eligible["Defensive"]].head(pool_size - len(defensive_pool))
+    eligible = pd.concat([return_pool, defensive_pool]).sort_values("Signal Score", ascending=False)
     if eligible.empty:
         return PortfolioResult(warnings=["No securities passed the portfolio eligibility rules."])
-    # Correlation-aware greedy selection, distinct from the standalone stock ranking.
+    # Preserve sector diversity and low-beta diversifiers before using
+    # correlation to fill the remaining slots.
     selected: list[str] = []
     corr = returns[eligible["Ticker"]].corr()
+    defensive = eligible[eligible["Defensive"]]["Ticker"].head(2).tolist()
+    selected.extend(defensive)
+    seen_sectors = set(eligible.set_index("Ticker").loc[selected, "Sector"]) if selected else set()
+    for row in eligible.itertuples(index=False):
+        ticker = str(row.Ticker)
+        sector = str(row.Sector)
+        if ticker not in selected and sector not in seen_sectors:
+            selected.append(ticker)
+            seen_sectors.add(sector)
+        if len(selected) >= mandate.max_holdings:
+            break
     for ticker in eligible["Ticker"]:
+        if ticker in selected:
+            continue
         if not selected or float(corr.loc[ticker, selected].abs().mean()) < 0.80:
             selected.append(ticker)
         if len(selected) >= mandate.max_holdings:
@@ -105,18 +126,38 @@ def optimize_portfolio(signals: pd.DataFrame, returns: pd.DataFrame, mandate: Ma
         {"type": "ineq", "fun": lambda w: mandate.beta_cap - float(w @ betas)},
     ]
     sectors = candidates["Sector"].to_numpy()
+    sector_masks = []
     for sector in np.unique(sectors):
         mask = (sectors == sector).astype(float)
+        sector_masks.append(mask)
         constraints.append({"type": "ineq", "fun": lambda w, m=mask: mandate.sector_cap - float(w @ m)})
+
+    linear_inequalities = np.vstack([betas, *sector_masks])
+    linear_limits = np.array([mandate.beta_cap, *([mandate.sector_cap] * len(sector_masks))])
+    feasible = linprog(
+        -expected,
+        A_ub=linear_inequalities,
+        b_ub=linear_limits,
+        A_eq=np.ones((1, n)),
+        b_eq=np.ones(1),
+        bounds=bounds,
+        method="highs",
+    )
+    if not feasible.success:
+        return PortfolioResult(warnings=["No feasible portfolio exists under the selected position, sector, and beta limits."])
 
     def objective(w: np.ndarray) -> float:
         diversification_penalty = 0.10 * float(w @ w)
         return -(float(w @ expected) - mandate.risk_aversion * float(w @ cov @ w) - diversification_penalty)
 
-    result = minimize(objective, np.full(n, 1 / n), method="SLSQP", bounds=bounds, constraints=constraints, options={"maxiter": 500, "ftol": 1e-10})
+    result = minimize(objective, feasible.x, method="SLSQP", bounds=bounds, constraints=constraints, options={"maxiter": 500, "ftol": 1e-10})
+    warnings: list[str] = []
     if not result.success:
-        return PortfolioResult(warnings=[f"No feasible portfolio under the selected position, sector, and beta limits: {result.message}"])
-    weights = np.clip(result.x, 0, mandate.max_weight)
+        weights = feasible.x
+        warnings.append("The risk optimizer did not converge, so the displayed allocation uses a constraint-verified linear solution.")
+    else:
+        weights = result.x
+    weights = np.clip(weights, 0, mandate.max_weight)
     if weights.sum() <= 0:
         return PortfolioResult(warnings=["No feasible portfolio: the optimizer returned zero investable weight."])
     weights /= weights.sum()
@@ -148,4 +189,5 @@ def optimize_portfolio(signals: pd.DataFrame, returns: pd.DataFrame, mandate: Ma
             "Portfolio Beta Constraint": float(weight_series.to_numpy() @ betas),
         }
     )
-    return PortfolioResult(holdings.sort_values("Weight", ascending=False), portfolio_returns, metrics, [])
+    holdings = holdings[holdings["Weight"] > tolerance]
+    return PortfolioResult(holdings.sort_values("Weight", ascending=False), portfolio_returns, metrics, warnings)

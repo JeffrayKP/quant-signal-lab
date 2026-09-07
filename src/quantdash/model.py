@@ -43,7 +43,12 @@ def fit_predict(panel: pd.DataFrame, horizon: int, as_of: pd.Timestamp | None = 
     trainable = frame.dropna(subset=["future_return", "target_positive"]).copy()
     feature_cols = [c for c in FEATURES if c in trainable]
     trainable = trainable[trainable[feature_cols].notna().sum(axis=1) >= len(feature_cols) // 2]
-    latest = frame.sort_values(["ticker", "date"]).groupby("ticker", as_index=False).tail(1)
+    latest_source = frame.sort_values(["ticker", "date"]).copy()
+    # A provider can publish a latest price row before every field is complete.
+    # Carry the most recent known feature forward within that ticker instead of
+    # replacing the live signal with cross-sectional training medians.
+    latest_source[feature_cols] = latest_source.groupby("ticker")[feature_cols].ffill()
+    latest = latest_source.groupby("ticker", as_index=False).tail(1)
     if len(trainable) < 1000:
         diagnostics.warnings.append("Insufficient history for a defensible panel model.")
         return pd.DataFrame(), diagnostics
