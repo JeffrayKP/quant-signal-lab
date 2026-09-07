@@ -72,29 +72,33 @@ def metrics(items: list[tuple[str, str, str]]) -> None:
 
 def show_loader(message: str):
     placeholder = st.empty()
+    update_loader(placeholder, message)
+    return placeholder
+
+
+def update_loader(placeholder, message: str) -> None:
     placeholder.markdown(
         f'<div class="quant-loader"><span class="quant-loader-circle"></span><span>{html.escape(message)}</span></div>',
         unsafe_allow_html=True,
     )
-    return placeholder
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=8)
 def cached_download(tickers: tuple[str, ...], period: str):
     return download_prices(list(tickers), period)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=8)
 def cached_features(data: dict[str, pd.DataFrame], benchmark: str) -> pd.DataFrame:
     return build_features(data, benchmark)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=16)
 def cached_predictions(panel: pd.DataFrame, horizon: int):
     return fit_predict(panel, horizon)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False, max_entries=64)
 def cached_current_events(ticker: str, sector: str):
     return current_events(ticker, sector)
 
@@ -102,21 +106,24 @@ def cached_current_events(ticker: str, sector: str):
 def controls() -> tuple[list[str], str, Mandate, bool]:
     st.sidebar.markdown("### Quant research\n**Signal Workspace**")
     st.sidebar.caption("Set the mandate. The dashboard handles the detail.")
-    period = st.sidebar.selectbox("Price history", ["3y", "5y", "10y"], index=1)
-    horizon = st.sidebar.selectbox("Time horizon", [3, 5, 10, 20], index=1, format_func=lambda x: f"{x} trading days")
-    target = st.sidebar.select_slider("Return target", [0.00, 0.01, 0.02, 0.03, 0.05], value=0.03, format_func=lambda x: f"{x:.0%}")
-    manual = st.sidebar.text_area("Add stocks to this model run", placeholder="TSM, SKHY, 7203.T, VOW3.DE")
-    st.sidebar.caption("Use Yahoo Finance symbols. International stocks need their exchange suffix, such as 7203.T or VOW3.DE.")
-    with st.sidebar.expander("Screen filters", expanded=False):
-        min_probability = st.slider("Minimum probability positive", 0.40, 0.70, 0.50, 0.01)
-    with st.sidebar.expander("Portfolio construction", expanded=False):
-        max_holdings = st.slider("Maximum holdings", 5, 12, 8)
-        max_weight = st.slider("Maximum position", 0.10, 0.35, 0.20, 0.01)
-        sector_cap = st.slider("Maximum sector exposure", 0.25, 0.60, 0.40, 0.05)
-        beta_cap = st.slider("Maximum portfolio beta", 0.60, 1.40, 1.05, 0.05)
-        costs = st.slider("Transaction cost assumption (bps)", 0, 50, 10)
-    with st.sidebar.expander("Universe and data", expanded=False):
-        upload = st.file_uploader("Upload ticker CSV", type=["csv"])
+    st.sidebar.caption("Change any settings below, then click Apply settings once.")
+    with st.sidebar.form("research_settings", enter_to_submit=False):
+        period = st.selectbox("Price history", ["3y", "5y", "10y"], index=1)
+        horizon = st.selectbox("Time horizon", [3, 5, 10, 20], index=1, format_func=lambda x: f"{x} trading days")
+        target = st.select_slider("Return target", [0.00, 0.01, 0.02, 0.03, 0.05], value=0.03, format_func=lambda x: f"{x:.0%}")
+        manual = st.text_area("Add stocks to this model run", placeholder="TSM, SKHY, 7203.T, VOW3.DE")
+        st.caption("Use Yahoo Finance symbols. International stocks need their exchange suffix, such as 7203.T or VOW3.DE.")
+        with st.expander("Screen filters", expanded=False):
+            min_probability = st.slider("Minimum probability positive", 0.40, 0.70, 0.50, 0.01)
+        with st.expander("Portfolio construction", expanded=False):
+            max_holdings = st.slider("Maximum holdings", 5, 12, 8)
+            max_weight = st.slider("Maximum position", 0.10, 0.35, 0.20, 0.01)
+            sector_cap = st.slider("Maximum sector exposure", 0.25, 0.60, 0.40, 0.05)
+            beta_cap = st.slider("Maximum portfolio beta", 0.60, 1.40, 1.05, 0.05)
+            costs = st.slider("Transaction cost assumption (bps)", 0, 50, 10)
+        with st.expander("Universe and data", expanded=False):
+            upload = st.file_uploader("Upload ticker CSV", type=["csv"])
+        st.form_submit_button("Apply settings", type="primary", width="stretch")
     # User-requested symbols come first so partial upstream responses and the
     # bounded recovery path prioritize the exact stocks the user asked for.
     requested = [x for x in manual.replace("\n", ",").split(",") if x.strip()]
@@ -289,15 +296,19 @@ def main() -> None:
         cached_features.clear()
         cached_predictions.clear()
     loader = show_loader("Loading market data...")
-    data, data_warnings = cached_download(tuple(tickers), period)
-    loader.empty()
-    if mandate.benchmark not in data or len(data) < 5:
-        st.error("Market data could not be loaded. Check your internet connection, then click Refresh market data in the sidebar.")
-        for warning in data_warnings[:5]:
-            st.caption(f"• {warning}")
-        st.stop()
-    panel = cached_features(data, mandate.benchmark)
-    predictions, diagnostics = cached_predictions(panel, mandate.horizon)
+    try:
+        data, data_warnings = cached_download(tuple(tickers), period)
+        if mandate.benchmark not in data or len(data) < 5:
+            st.error("Market data could not be loaded. Check your internet connection, then click Refresh market data in the sidebar.")
+            for warning in data_warnings[:5]:
+                st.caption(f"• {warning}")
+            st.stop()
+        update_loader(loader, "Calculating market indicators...")
+        panel = cached_features(data, mandate.benchmark)
+        update_loader(loader, f"Updating the {mandate.horizon}-day research model...")
+        predictions, diagnostics = cached_predictions(panel, mandate.horizon)
+    finally:
+        loader.empty()
     if predictions.empty:
         st.error("The model did not have enough validated history to publish research signals.")
         st.stop()
@@ -572,9 +583,11 @@ def main() -> None:
         event_key = f"current_events_{research_ticker}"
         if st.button("Update current events", type="primary", width="stretch", disabled=not valid_event_ticker):
             loader = show_loader("Loading current events...")
-            event_sector = str(matching_rows.iloc[0]["Sector"]) if not matching_rows.empty else SECTORS.get(research_ticker, "Other")
-            st.session_state[event_key] = cached_current_events(research_ticker, event_sector)
-            loader.empty()
+            try:
+                event_sector = str(matching_rows.iloc[0]["Sector"]) if not matching_rows.empty else SECTORS.get(research_ticker, "Other")
+                st.session_state[event_key] = cached_current_events(research_ticker, event_sector)
+            finally:
+                loader.empty()
         if event_key in st.session_state:
             events, event_warnings = st.session_state[event_key]
             for warning in event_warnings[:3]:
@@ -614,8 +627,10 @@ def main() -> None:
             st.plotly_chart(fig, width="stretch")
         if st.button("Run full portfolio-matched walk-forward backtest"):
             loader = show_loader("Running walk-forward backtest...")
-            result = run_walk_forward(data, mandate)
-            loader.empty()
+            try:
+                result = run_walk_forward(data, mandate)
+            finally:
+                loader.empty()
             if not result.equity.empty:
                 st.line_chart(result.equity)
                 st.dataframe(pd.DataFrame(result.metrics.items(), columns=["Metric", "Value"]), width="stretch", hide_index=True)
