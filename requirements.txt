@@ -2,7 +2,7 @@ streamlit==1.63.0
 pandas==2.2.3
 numpy==2.3.5
 plotly==6.9.0
-yfinance==0.2.66
+yfinance==1.7.0
 scikit-learn==1.8.0
 scipy==1.17.0
 requests==2.34.2
